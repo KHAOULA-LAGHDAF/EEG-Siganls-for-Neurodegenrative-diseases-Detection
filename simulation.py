@@ -11,20 +11,33 @@ import os
 import matplotlib.pyplot as plt
 from tensorflow import keras
 from tensorflow.keras.initializers import Orthogonal
+import numpy as np
+import scipy.signal as signal
+import scipy.integrate as integrate
+
+# Define frequency bands for bandpower extraction
+frequency_bands = {
+    'delta': (0.5, 4),
+    'theta': (4, 8),
+    'alpha': (8, 13),
+    'beta': (13, 25),
+    'gamma': (25, 45)
+}
 
 def extract_band_power(segments, frequency_bands, sampling_rate):
-    """
-    Extrait la puissance des bandes de fréquence pour chaque segment EEG.
-    """
     band_powers = []
     for segment in segments:
-        freqs, psd = signal.welch(segment, fs=sampling_rate, nperseg=len(segment))
-        bp = []
-        for band, (low_freq, high_freq) in frequency_bands.items():
-            idx_band = np.logical_and(freqs >= low_freq, freqs <= high_freq)
+      print(f"Shape of segment in extract_band_power: {segment.shape}")
+      freqs, psd = signal.welch(segment, fs=sampling_rate, nperseg=len(segment))
+      band_power = []
+      for band, (low_freq, high_freq) in frequency_bands.items():
+        idx_band = np.logical_and(freqs >= low_freq, freqs <= high_freq)
+        if np.sum(idx_band) == 0:
+          power = 0.0 #return 0 if the `idx_band` is empty.
+        else:
             power = integrate.simps(psd[idx_band], freqs[idx_band])
-            bp.append(power)
-        band_powers.append(bp)
+        band_power.append(power)
+      band_powers.append(band_power)
     return np.array(band_powers)
 
 def calculate_spectral_entropy(band_powers):
@@ -34,23 +47,43 @@ def calculate_spectral_entropy(band_powers):
     normalized_powers = band_powers / np.sum(band_powers, axis=1, keepdims=True)
     return entropy(normalized_powers, axis=1)
 
-def process_new_eeg(eeg_file_path, model_path, encoder_path):
-    """
-    Traite un nouveau fichier EEG (.set) avec le même pipeline que dans le notebook.
-    Retourne la prédiction finale et les scores de confiance.
-    """
-    classifier_model = keras.models.load_model(model_path)  # Modèle LSTM final
-    encoder_model = keras.models.load_model(encoder_path)   # Autoencodeur/Encodeur
+def process_new_eeg(eeg_file, model_path, encoder_path):
+    # 1. Load both the classifier model and autoencoder
+    model = load_model(model_path)
+    encoder = load_model(encoder_path)  # You need to save and load your encoder model too
 
-    # Paramètres
-    segment_length_sec = 5
-    sampling_rate_raw = 500
-    segment_length = segment_length_sec * sampling_rate_raw
+    # 2. Load and preprocess the EEG data
+    raw = mne.io.read_raw_eeglab(eeg_file, preload=True)
+    data = raw.get_data()
+
+    # Define parameters (make sure these match your training parameters)
+    segment_length = 5 * 500  # 5 seconds * 500 Hz
     overlap_ratio = 0.5
     overlap_step = int(segment_length * (1 - overlap_ratio))
+    sequence_length = 10  # Make sure this matches your training sequence length
 
-    # Fréquence d'échantillonnage pour l'extraction de features
-    sampling_rate_features = 128
+    # 3. Segment the data
+    segments = []
+    start = 0
+    while start + segment_length <= data.shape[1]:
+        segment = data[:, start:start + segment_length]
+        segments.append(segment)
+        start += overlap_step
+    segments = np.array(segments)
+
+    # 4. Standardize segments
+    scaler = StandardScaler()
+    standardized_segments = []
+    for segment in segments:
+        standardized_segment = scaler.fit_transform(segment)
+        standardized_segments.append(standardized_segment)
+    standardized_segments = np.array(standardized_segments)
+
+    # 5. Extract features using the loaded encoder
+    encoder_output = encoder.predict(standardized_segments)
+    print(f"Shape of encoder_output: {encoder_output.shape}")
+
+    # 6. Extract frequency band powers
     frequency_bands = {
         'delta': (0.5, 4),
         'theta': (4, 8),
@@ -58,50 +91,46 @@ def process_new_eeg(eeg_file_path, model_path, encoder_path):
         'beta': (13, 25),
         'gamma': (25, 45)
     }
-    sequence_length = 10
-
-    # Lecture EEG
-    raw = mne.io.read_raw_eeglab(eeg_file_path, preload=True)
-    data = raw.get_data()  # (n_channels, n_samples)
-
-    # Segmenter
-    segments = []
-    start = 0
-    while start + segment_length <= data.shape[1]:
-        segment = data[:, start:start + segment_length]
-        segments.append(segment)
-        start += overlap_step
-    segments = np.array(segments)  # (N, n_channels, segment_length)
-
-    if len(segments) == 0:
-        return None, {}
-
-    # Standardiser
-    standardized_segments = []
-    for seg in segments:
-        scaler = StandardScaler()
-        seg_std = scaler.fit_transform(seg)
-        standardized_segments.append(seg_std)
-    standardized_segments = np.array(standardized_segments)
-
-    # Encoder
-    encoder_output = encoder_model.predict(standardized_segments)
-
-    # Extraire features
+    sampling_rate_features = 128
     band_powers = extract_band_power(encoder_output, frequency_bands, sampling_rate_features)
+
+    # 7. Calculate spectral entropy
     spectral_entropy = calculate_spectral_entropy(band_powers)
+
+    # 8. Combine features
     combined_features = np.hstack((band_powers, spectral_entropy.reshape(-1, 1)))
 
-    # Créer séquences
-    all_sequences = []
+    # 9. Create sequences
+    sequences = []
     for i in range(len(combined_features) - sequence_length + 1):
-        seq = combined_features[i:i + sequence_length]
-        all_sequences.append(seq)
-    all_sequences = np.array(all_sequences)  # (N_sequences, sequence_length, nb_features)
+        sequence = combined_features[i:i + sequence_length]
+        sequences.append(sequence)
+    sequences = np.array(sequences)
 
-    if len(all_sequences) == 0:
-        return None, {}
+    # 10. Make prediction
+    predictions = model.predict(sequences)
 
+    # Define label mapping (make sure this matches your training labels)
+    label_mapping = {
+        0: 'Alzheimer',
+        1: 'Control',
+        2: 'Frontotemporal'
+    }
+
+    # Convert predictions to labels
+    predicted_classes = [label_mapping[np.argmax(pred)] for pred in predictions]
+
+    # Get the most common prediction and counts
+    most_common_prediction = Counter(predicted_classes).most_common(1)[0][0]
+    prediction_counts = Counter(predicted_classes)
+
+    # Calculate confidence scores
+    confidence_scores = {
+        label: count/len(predicted_classes) * 100
+        for label, count in prediction_counts.items()
+    }
+
+    return most_common_prediction, confidence_scores
     # Prédiction
     predictions = classifier_model.predict(all_sequences)
 
