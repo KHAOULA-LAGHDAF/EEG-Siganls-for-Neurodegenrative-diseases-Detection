@@ -22,7 +22,7 @@ def extract_band_power(segments, frequency_bands, sampling_rate):
         bp = []
         for band, (low_freq, high_freq) in frequency_bands.items():
             idx_band = np.logical_and(freqs >= low_freq, freqs <= high_freq)
-            power = integrate.simps(psd[idx_band], freqs[idx_band])
+            power = integrate.simpson(psd[idx_band], freqs[idx_band])
             bp.append(power)
         band_powers.append(bp)
     return np.array(band_powers)
