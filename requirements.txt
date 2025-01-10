@@ -1,7 +1,7 @@
-streamlit
-matplotlib
-pandas
-mne
-tensorflow
-scikit-learn
-scipy
+streamlit==1.23.0
+matplotlib==3.7.1
+pandas==1.5.3
+mne==1.4.0
+tensorflow==2.13.0
+scikit-learn==1.2.2
+scipy==1.10.1
