@@ -22,7 +22,7 @@ def extract_band_power(segments, frequency_bands, sampling_rate):
         bp = []
         for band, (low_freq, high_freq) in frequency_bands.items():
             idx_band = np.logical_and(freqs >= low_freq, freqs <= high_freq)
-            power = integrate.simpson(psd[idx_band], freqs[idx_band])
+            power = integrate.simps(psd[idx_band], freqs[idx_band])
             bp.append(power)
         band_powers.append(bp)
     return np.array(band_powers)
@@ -126,37 +126,27 @@ def process_new_eeg(eeg_file_path, model_path, encoder_path):
 
 def simulation_page():
     st.title("EEG Signal Simulation")
-    st.write("Veuillez téléverser un fichier EEG au format `.set` pour lancer la classification.")
+    st.write("Veuillez sélectionner un fichier EEG au format .set pour lancer la classification.")
 
     MODEL_PATH = "models/eegmodelsim.h5"
     ENCODER_PATH = "models/encoder_modelsim.h5"
 
-    # -- Initialiser la clé session_state s'il n'existe pas --
-    if "uploaded_set_path" not in st.session_state:
-        st.session_state["uploaded_set_path"] = None
+    # List available .set files from testData directory
+    test_data_dir = "testData"
+    set_files = [f for f in os.listdir(test_data_dir) if f.endswith('.set')]
+    set_files.insert(0, "Choose the EEG File")  # Add default option
 
-    eeg_file = st.file_uploader("Upload EEG file", type=["set"])
+    eeg_file = st.selectbox("Sélectionnez un fichier EEG", set_files)
 
-    if eeg_file is not None:
-        # 1) On crée un fichier temporaire.
-        #    NE PAS le supprimer ensuite, car on le veut pour la "réal time" plus tard.
-        temp_file_path = f"temp_{eeg_file.name}"
-        with open(temp_file_path, "wb") as f:
-            f.write(eeg_file.read())
-
-        # 2) On stocke ce path dans la session pour le réutiliser
-        st.session_state["uploaded_set_path"] = temp_file_path
+    if eeg_file and eeg_file != "Choose the EEG File":
+        eeg_file_path = os.path.join(test_data_dir, eeg_file)
 
         with st.spinner("Processing EEG file..."):
             final_prediction, confidence = process_new_eeg(
-                eeg_file_path=temp_file_path,
+                eeg_file_path=eeg_file_path,
                 model_path=MODEL_PATH,
                 encoder_path=ENCODER_PATH
             )
-
-        # <-- On NE supprime pas le fichier ici
-        # if os.path.exists(temp_file_path):
-        #     os.remove(temp_file_path)
 
         if final_prediction is None:
             st.error("Impossible de segmenter ou de créer des séquences sur ce fichier EEG. Fichier trop court ?")
@@ -167,14 +157,11 @@ def simulation_page():
             for cls_name, score in confidence.items():
                 st.write(f"- {cls_name}: {score:.2f}%")
 
-            ##################################
-            #  Bouton "Predict in real time"
-            ##################################
             if st.button("Predict in real time"):
                 st.info("Affichage de la prédiction pour chaque séquence (avec graphe)...")
-                # Appel de la fonction temps réel,
-                # on lui passe le chemin sauvegardé
-                realtime_prediction(st.session_state["uploaded_set_path"])
+                realtime_prediction(eeg_file_path)
+    else:
+        st.warning("Veuillez sélectionner un fichier EEG pour continuer.")
 
 def realtime_prediction(eeg_file_path):
     """
